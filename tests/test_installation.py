@@ -68,6 +68,31 @@ class ImportTests(unittest.TestCase):
         self.assertNotIn("DNS =", p)
         self.assertNotIn("::/0", p)
 
+    def test_awg3_timers_preserved_in_raw_and_share_links(self):
+        config = CLIENT.replace("RandomTrailers = on", """RandomTrailers = on
+RekeyAfterTime = 100-145
+RekeyTimeout = 4-10
+RejectAfterTime = 170-210
+KeepaliveTimeout = 8-22
+MaxHandshakeAttempts = 12-28""")
+        for source in (config, url_from_config(config), vpn_uri(config)):
+            profile = import_awg_profile(source)
+            for line in ("RekeyAfterTime = 100-145", "RekeyTimeout = 4-10",
+                         "RejectAfterTime = 170-210", "KeepaliveTimeout = 8-22",
+                         "MaxHandshakeAttempts = 12-28"):
+                self.assertIn(line, profile)
+
+    def test_awg3_single_integer_values(self):
+        config = CLIENT.replace("RandomTrailers = on", "RandomTrailers = on\nRekeyAfterTime = 120\nMaxHandshakeAttempts = 18")
+        profile = import_awg_profile(config)
+        self.assertIn("RekeyAfterTime = 120", profile)
+        self.assertIn("MaxHandshakeAttempts = 18", profile)
+
+    def test_awg3_timers_reject_invalid_values(self):
+        for invalid in ("1; echo hacked", "20-10", "0", "1-9999999", "-20"):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "AWG 3.x"):
+                import_awg_profile(CLIENT.replace("RandomTrailers = on", f"RandomTrailers = on\nRekeyAfterTime = {invalid}"))
+
     def test_awg_base64_link(self):
         self.assertEqual(import_awg_profile(url_from_config(CLIENT)), import_awg_profile(CLIENT))
 
