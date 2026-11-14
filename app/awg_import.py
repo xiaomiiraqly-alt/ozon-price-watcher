@@ -26,7 +26,11 @@ INTERFACE_FIELDS = (
     "H1", "H2", "H3", "H4", "I1", "I2", "I3", "I4", "I5",
     "HeaderProtectionKey", "ContentPaddingAddition", "RandomTrailers",
     "DisableCookies",
+    # AWG 3.x protocol timers. They may be exact integers or randomized ranges.
+    "RekeyAfterTime", "RekeyTimeout", "RejectAfterTime",
+    "KeepaliveTimeout", "MaxHandshakeAttempts",
 )
+AWG3_TIMER_FIELDS = ("RekeyAfterTime", "RekeyTimeout", "RejectAfterTime", "KeepaliveTimeout")
 PEER_FIELDS = ("PublicKey", "PresharedKey", "Endpoint", "PersistentKeepalive")
 PREFIXES = ("awg://", "amneziawg://", "wg://", "wireguard://")
 
@@ -193,6 +197,19 @@ def _safe_profile(raw: str) -> str:
     for key in peer:
         if key not in PEER_FIELDS and key != "AllowedIPs":
             raise ValueError(f"Неизвестная директива Peer: {key}")
+    # Unlike arbitrary wg-quick hooks, these AWG 3.x keys are safe numeric
+    # configuration options. Reject malformed input rather than passing it to
+    # the VPN client; do not drop the values, which can change wire behaviour.
+    for key in (*AWG3_TIMER_FIELDS, "MaxHandshakeAttempts"):
+        if key not in interface:
+            continue
+        value = interface[key]
+        if not re.fullmatch(r"[0-9]{1,6}(?:-[0-9]{1,6})?", value):
+            raise ValueError(f"Неверное значение AWG 3.x: {key}")
+        bounds = [int(part) for part in value.split("-")]
+        upper_limit = 10_000 if key == "MaxHandshakeAttempts" else 86_400
+        if min(bounds) < 1 or max(bounds) > upper_limit or bounds != sorted(bounds):
+            raise ValueError(f"Неверный диапазон AWG 3.x: {key}")
     if not all(interface.get(field) for field in ("PrivateKey", "Address")):
         raise ValueError("В профиле отсутствуют PrivateKey или Address")
     if not all(peer.get(field) for field in ("PublicKey", "Endpoint")):
