@@ -1,0 +1,11 @@
+# Enable only with --profile family-https and valid LOGIN_DOMAIN.
+# Caddy handles ACME HTTPS. No access logs of one-time login URL tokens.
+{$LOGIN_DOMAIN} {
+    encode gzip
+    reverse_proxy login-web:8086
+    header {
+        Referrer-Policy no-referrer
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+    }
+}

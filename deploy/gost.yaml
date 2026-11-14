@@ -1,0 +1,33 @@
+# GOST 3.3 SOCKS5 endpoint for Telegram. Accessible only on Compose private_backend.
+# The *outgoing* socket is explicitly bound to AWG client interface awg0.
+# Do not remove the virtual-node interface binding: it is the no-leak guard.
+services:
+  - name: telegram-only-vpn
+    addr: ':1080'
+    resolver: vpn-dns
+    handler:
+      type: socks5
+      chain: vpn-egress
+    listener:
+      type: tcp
+
+chains:
+  - name: vpn-egress
+    hops:
+      - name: through-awg
+        nodes:
+          - name: egress-awg0
+            addr: ':0'
+            interface: awg0
+            connector:
+              type: virtual
+            dialer:
+              type: virtual
+
+# Name resolution via encrypted DNS, itself routed through AWG.
+resolvers:
+  - name: vpn-dns
+    nameservers:
+      - addr: tls://1.1.1.1:853
+        chain: vpn-egress
+        only: ipv4

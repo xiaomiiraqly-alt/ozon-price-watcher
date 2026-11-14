@@ -1,0 +1,11 @@
+.env
+.git
+.venv
+__pycache__
+*.pyc
+vendor/*
+!vendor/ozon-mcp
+vendor/ozon-mcp/.git
+vendor/ozon-mcp/tests
+data
+.pytest_cache

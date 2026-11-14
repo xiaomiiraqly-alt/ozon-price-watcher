@@ -1,0 +1,119 @@
+# Family Ozon watcher. Telegram travels ONLY through AWG+SOCKS; Ozon direct from VPS.
+# All buyer sessions live behind ozon-gateway; only the tiny login-web is reverse-proxied.
+services:
+  ozon-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.gateway
+    restart: unless-stopped
+    shm_size: 1gb
+    environment:
+      GATEWAY_TOKEN: ${GATEWAY_TOKEN:?set_a_random_gateway_token}
+      OZON_USERS_ROOT: /data/ozon/users
+      OZON_ENABLE_WRITES: '0'
+      OZON_ENABLE_ORDERS: '0'
+    volumes:
+      - ./data/ozon:/data/ozon
+      - ./data/bot:/botdata:ro
+    networks:
+      - private_backend
+      - direct_egress
+    # No published ports; a bearer token is still mandatory within Compose.
+
+  awg-client:
+    image: ghcr.io/ayastrebov/docker-amneziawg:latest
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      net.ipv4.conf.all.src_valid_mark: '1'
+      net.ipv6.conf.all.disable_ipv6: '1'
+    volumes:
+      - ./data/awg-client:/config
+    networks:
+      - private_backend
+      - direct_egress
+    healthcheck:
+      test: ["CMD-SHELL", "awg show awg0 >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+
+  telegram-proxy:
+    image: gogost/gost:3.3.0
+    restart: unless-stopped
+    network_mode: "service:awg-client"
+    cap_add:
+      - NET_RAW
+    depends_on:
+      awg-client:
+        condition: service_healthy
+    volumes:
+      - ./deploy/gost.yaml:/etc/gost/gost.yaml:ro
+    command: ["-C", "/etc/gost/gost.yaml"]
+
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      ozon-gateway:
+        condition: service_started
+      telegram-proxy:
+        condition: service_started
+    volumes:
+      - ./data/bot:/data
+    networks:
+      - private_backend
+    # No direct_egress => Telegram cannot fall back to host IP.
+
+  login-web:
+    build: .
+    restart: unless-stopped
+    command: ["python", "-m", "app.login_web"]
+    environment:
+      TELEGRAM_USER_ID: ${TELEGRAM_USER_ID:?set_owner_id}
+      GATEWAY_TOKEN: ${GATEWAY_TOKEN:?set_a_random_gateway_token}
+      OZON_GATEWAY_URL: http://ozon-gateway:8085
+      DATABASE_PATH: /data/watcher.sqlite3
+    depends_on:
+      ozon-gateway:
+        condition: service_started
+    volumes:
+      - ./data/bot:/data
+    ports:
+      # Only loopback on VPS. Publish externally through HTTPS Caddy/reverse proxy.
+      - '127.0.0.1:8765:8086'
+    networks:
+      - private_backend
+
+  family-https:
+    image: caddy:2.10-alpine
+    profiles: ['family-https']
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - family_caddy_data:/data
+      - family_caddy_config:/config
+    networks:
+      - private_backend
+      - direct_egress
+    depends_on:
+      - login-web
+
+volumes:
+  family_caddy_data:
+  family_caddy_config:
+
+networks:
+  private_backend:
+    internal: true
+  direct_egress:
+    driver: bridge
