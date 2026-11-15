@@ -134,7 +134,12 @@ def setup_handlers(dp:Dispatcher,store:Store,config:Config,bot:Bot) -> dict[int,
         if len(args)!=2 or not args[1].isdigit():
             await message.answer("Формат: /revoke TELEGRAM_ID")
             return
-        uid=int(args[1])
+        try:
+            uid=int(args[1])
+            if not 0<uid<2**63:raise ValueError()
+        except ValueError:
+            await message.answer("Нужен положительный числовой Telegram ID.")
+            return
         try:
             changed=store.revoke(config.owner_id,uid)
         except PermissionError:
@@ -143,7 +148,8 @@ def setup_handlers(dp:Dispatcher,store:Store,config:Config,bot:Bot) -> dict[int,
         if not changed:
             await message.answer("Участник не найден или уже отключён.")
             return
-        monitors.pop(uid,None)
+        old_monitor=monitors.pop(uid,None)
+        if old_monitor:await old_monitor.stop()
         store.erase_user_data(uid)
         try:
             async with connect_gateway(config.gateway_url,config.gateway_token,uid) as api:
@@ -174,12 +180,10 @@ def setup_handlers(dp:Dispatcher,store:Store,config:Config,bot:Bot) -> dict[int,
             return
         uid=message.from_user.id
         try:
-            async with connect_gateway(config.gateway_url,config.gateway_token,uid) as api:
-                await api.drop_account()
+            await monitor(uid).disconnect()
         except GatewayError:
             await message.answer("Не удалось удалить профиль Ozon. Попробуйте ещё раз; данные не менялись.")
             return
-        store.erase_user_data(uid)
         monitors.pop(uid,None)
         await message.answer("Ваш Ozon отключён, история и настройки удалены. Для нового подключения используйте /connect.")
 
@@ -192,6 +196,7 @@ def setup_handlers(dp:Dispatcher,store:Store,config:Config,bot:Bot) -> dict[int,
         try:
             async with connect_gateway(config.gateway_url,config.gateway_token,s.user_id) as api:
                 result=await api.call("session_status")
+            if not isinstance(result,dict):raise GatewayError("Invalid session status")
             report.append("Ozon: "+("подключён" if result.get("signed_in") else "не подключён, /connect"))
         except GatewayError:
             report.append("Ozon: сервис недоступен")
@@ -212,8 +217,8 @@ def setup_handlers(dp:Dispatcher,store:Store,config:Config,bot:Bot) -> dict[int,
         if len(args)>1:
             if args[1] in ("cart","order","manual"):
                 kind=args[1]
-                if len(args)>2 and args[2].isdigit():page=max(1,int(args[2]))
-            elif args[1].isdigit():page=max(1,int(args[1]))
+                if len(args)>2 and args[2].isascii() and args[2].isdigit():page=max(1,int(args[2]))
+            elif args[1].isascii() and args[1].isdigit():page=max(1,int(args[1]))
             else:
                 await message.answer("Формат: /items [cart|order|manual] [страница]")
                 return

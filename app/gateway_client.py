@@ -26,10 +26,14 @@ class GatewayClient:
                     result=await res.json(content_type=None)
                 except (ValueError, aiohttp.ContentTypeError) as exc:
                     raise GatewayError("Ozon gateway returned an invalid response") from exc
+                if not isinstance(result,dict):
+                    raise GatewayError("Ozon gateway returned an invalid response")
                 if res.status != 200:
                     # Never leak server traceback or credentials to Telegram.
                     raise GatewayError(str(result.get("error", "Ozon service unavailable"))[:180])
-                return result.get("result")
+                if "result" not in result:
+                    raise GatewayError("Ozon gateway returned an invalid response")
+                return result["result"]
         except (aiohttp.ClientError, TimeoutError) as exc:
             raise GatewayError("Нет соединения с внутренним сервисом Ozon") from exc
 

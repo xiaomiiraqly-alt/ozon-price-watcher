@@ -5,12 +5,14 @@ ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy PLAYWRIGHT_BROWSERS_PATH=/ms-browser
 WORKDIR /app
 COPY vendor/ozon-mcp/pyproject.toml vendor/ozon-mcp/uv.lock vendor/ozon-mcp/README.md ./
 RUN uv sync --frozen --no-dev --no-install-project \
- && uv run playwright install --with-deps chromium \
+ && /app/.venv/bin/playwright install --with-deps chromium \
  && apt-get update \
  && apt-get install -y --no-install-recommends xvfb fluxbox \
  && rm -rf /var/lib/apt/lists/*
 COPY vendor/ozon-mcp/src ./src
-RUN uv sync --frozen --no-dev && uv pip install --python /app/.venv/bin/python 'aiohttp>=3.11,<4'
+RUN uv sync --frozen --no-dev \
+ && uv pip install --python /app/.venv/bin/python 'aiohttp>=3.11,<4' \
+      'mcp>=1.30,<2' 'PyJWT>=2.15,<3' 'multidict>=6.9.1,<7'
 COPY app ./app
 COPY deploy/gateway-entrypoint.sh ./gateway-entrypoint.sh
 RUN chmod +x ./gateway-entrypoint.sh && mkdir -p /data/ozon/users

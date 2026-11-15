@@ -19,6 +19,14 @@ class PriceTests(unittest.TestCase):
         self.assertTrue(should_alert(1000, 800, 900, 100))
         self.assertFalse(should_alert(1000, None, None, 100))
 
+    def test_fractional_and_international_prices(self):
+        for value,expected in (("99,9 ₽",99),("99.90 ₽",99),("1.234,50 ₽",1234),("1,234.50 ₽",1234),("1,234,567 ₽",1234567)):
+            with self.subTest(value=value):self.assertEqual(rubles(value),expected)
+
+    def test_invalid_numeric_prices_do_not_crash_or_become_positive(self):
+        for value in (float("inf"),float("-inf"),float("nan"),True,-100,"-100 ₽","12,34,56 ₽","1.2.3 ₽",.5,2**63,str(2**63)):
+            with self.subTest(value=value):self.assertIsNone(rubles(value))
+
     def test_card_modes(self):
         card = {"price":"1 200 ₽", "price_regular":"1 500 ₽", "price_old":"2 100 ₽", "available":True}
         self.assertEqual(choose_card_price(card, "bank"), 1200)

@@ -9,3 +9,6 @@ vendor/ozon-mcp/.git
 vendor/ozon-mcp/tests
 data
 .pytest_cache
+build
+dist
+*.egg-info

@@ -86,5 +86,35 @@ class LoginWebTests(unittest.IsolatedAsyncioTestCase):
         response=await self.client.post("/login/start",data={"csrf":csrf,"login":"79001234567"},headers=headers)
         self.assertEqual(response.status,403)
 
+    async def test_non_ascii_csrf_is_rejected(self):
+        sid,_=self.store.consume_login_token(self.store.issue_login_token(222))
+        response=await self.client.post("/login/start",data={"csrf":"неверный","login":"79001234567"},headers={"Cookie":f"{COOKIE}={sid}"})
+        self.assertEqual(response.status,403)
+
+    async def test_concurrent_start_posts_cannot_send_two_codes(self):
+        entered=asyncio.Event()
+        release=asyncio.Event()
+        calls=[]
+        class API:
+            async def call(self,tool,**args):
+                calls.append(tool)
+                if tool=="session_status":return {"signed_in":False}
+                entered.set()
+                await release.wait()
+                return {"stage":"code_requested"}
+        @asynccontextmanager
+        async def connect(*args):yield API()
+        sid,csrf=self.store.consume_login_token(self.store.issue_login_token(222))
+        kwargs={"data":{"csrf":csrf,"login":"79001234567"},"headers":{"Cookie":f"{COOKIE}={sid}"},"allow_redirects":False}
+        with patch("app.login_web.connect_gateway",connect):
+            first=asyncio.create_task(self.client.post("/login/start",**kwargs))
+            await entered.wait()
+            second=asyncio.create_task(self.client.post("/login/start",**kwargs))
+            await asyncio.sleep(0)
+            release.set()
+            responses=await asyncio.gather(first,second)
+        self.assertEqual(sorted(r.status for r in responses),[303,400])
+        self.assertEqual(calls.count("start_login"),1)
+
 
 if __name__=="__main__":unittest.main()

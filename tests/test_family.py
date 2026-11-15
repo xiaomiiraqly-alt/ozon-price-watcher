@@ -4,10 +4,8 @@ from contextlib import closing
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 from app.storage import Store
-from app.gateway_client import GatewayError
 
 
 class FamilyTests(unittest.TestCase):
@@ -99,6 +97,27 @@ class FamilyTests(unittest.TestCase):
         self.assertEqual(self.root.for_user(202).list_items(),[])
         self.assertEqual(len(self.root.for_user(303).list_items()),1)
         self.assertEqual(self.root.for_user(303).default_threshold,170)
+
+    def test_new_login_invalidates_only_that_users_previous_session(self):
+        self.invite(202)
+        self.invite(303)
+        sid1,_=self.root.consume_login_token(self.root.issue_login_token(202))
+        sid2,_=self.root.consume_login_token(self.root.issue_login_token(303))
+        token=self.root.issue_login_token(202)
+        self.assertIsNone(self.root.web_session(sid1))
+        self.assertIsNotNone(self.root.web_session(sid2))
+        sid3,_=self.root.consume_login_token(token)
+        self.assertIsNotNone(self.root.web_session(sid3))
+
+    def test_attempt_limit_and_expiration_are_enforced_atomically(self):
+        self.invite(202)
+        sid,_=self.root.consume_login_token(self.root.issue_login_token(202))
+        self.assertEqual([self.root.web_attempt(sid) for _ in range(6)],list(range(1,7)))
+        self.assertEqual(self.root.web_attempt(sid),999)
+        sid,_=self.root.consume_login_token(self.root.issue_login_token(202))
+        with self.root.db() as conn:
+            conn.execute("UPDATE web_sessions SET expires_at='2000-01-01'")
+        self.assertEqual(self.root.web_attempt(sid),999)
 
     def test_legacy_one_owner_data_kept(self):
         old=str(Path(self.tmp.name)/"old.db")

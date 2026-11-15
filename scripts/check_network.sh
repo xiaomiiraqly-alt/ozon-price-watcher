@@ -8,8 +8,9 @@ echo '=== AWG client tunnel ==='
 docker compose exec -T awg-client awg show awg0
 
 echo '=== Public exit seen by Telegram SOCKS5 ==='
-docker compose exec -T bot python - <<'PY'
+telegram_exit="$(docker compose exec -T bot python - <<'PY'
 import asyncio
+import ipaddress
 import os
 from aiohttp import ClientSession, ClientTimeout
 from aiohttp_socks import ProxyConnector
@@ -22,16 +23,27 @@ async def main():
     ) as session:
         async with session.get('https://api.ipify.org') as response:
             response.raise_for_status()
-            print('Telegram VPN exit:', (await response.text()).strip())
+            exit_ip=str(ipaddress.IPv4Address((await response.text()).strip()))
         async with session.get('https://api.telegram.org') as response:
             # 200/302/404 are all HTTP reachable; the endpoint needs no token here.
-            print('Telegram HTTPS status:', response.status)
+            if response.status>=400 and response.status!=404:
+                response.raise_for_status()
+        print(exit_ip)
 asyncio.run(main())
 PY
+)"
+printf 'Telegram VPN exit: %s\n' "$telegram_exit"
 
 echo '=== Public exit seen by Ozon gateway (no proxy) ==='
-docker compose exec -T ozon-gateway /app/.venv/bin/python - <<'PY'
+ozon_exit="$(docker compose exec -T ozon-gateway /app/.venv/bin/python - <<'PY'
+import ipaddress
 import urllib.request
 with urllib.request.urlopen('https://api.ipify.org', timeout=15) as response:
-    print('Ozon direct exit:', response.read().decode().strip())
+    print(ipaddress.IPv4Address(response.read().decode().strip()))
 PY
+)"
+printf 'Ozon direct exit: %s\n' "$ozon_exit"
+if [[ "$telegram_exit" == "$ozon_exit" ]]; then
+  echo 'ERROR: Telegram and Ozon use the same exit IP. Check the AWG Router overseas policy.' >&2
+  exit 1
+fi

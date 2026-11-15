@@ -118,6 +118,8 @@ def _from_vpn_key(link: str) -> str:
                 interface[key] = str(fields[key])
         if fields.get("mtu"):
             interface["MTU"] = str(fields["mtu"])
+        if ":" in host and not host.startswith("["):
+            host=f"[{host}]"
         peer = {
             "PublicKey": fields["server_pub_key"],
             "Endpoint": f"{host}:{port}",
@@ -158,7 +160,8 @@ def _from_awg_key(link: str) -> str:
     for k, name in mapping.items():
         if k in q and name != "PersistentKeepalive":
             interface[name] = q[k]
-    peer = {"PublicKey": q["publickey"], "Endpoint": f"{parsed.hostname}:{parsed.port}", "AllowedIPs": "0.0.0.0/0"}
+    host=f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    peer = {"PublicKey": q["publickey"], "Endpoint": f"{host}:{parsed.port}", "AllowedIPs": "0.0.0.0/0"}
     for source, target in (("presharedkey", "PresharedKey"), ("keepalive", "PersistentKeepalive"), ("persistentkeepalive", "PersistentKeepalive")):
         if q.get(source):
             peer[target] = q[source]
