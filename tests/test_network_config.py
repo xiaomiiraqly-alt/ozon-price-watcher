@@ -65,6 +65,8 @@ class DockerEgressTests(unittest.TestCase):
         self.assertIn('direct_egress', mcp['networks'])
         self.assertNotIn('network_mode', mcp)
         self.assertNotIn('ports', mcp)
+        # Tini reaps orphaned Chromium processes; avoid persistent zombies.
+        self.assertIs(mcp.get('init'), True)
 
     def test_family_login_exposes_only_loopback_http_and_optional_https(self):
         auth = self.compose['services']['login-web']
