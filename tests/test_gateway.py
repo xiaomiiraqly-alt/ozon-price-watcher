@@ -14,8 +14,26 @@ import aiohttp
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from app.gateway import UserWorker, WorkerManager, gateway_app
+from app.gateway import UserWorker, WorkerManager, gateway_app, safe_mcp_error_category
+from app.mcp_client import OzonMCPError
 from app.gateway_client import GatewayClient, GatewayError
+
+
+class SafeMCPDiagnosticTests(unittest.TestCase):
+    def test_categories_do_not_contain_account_data(self):
+        private = "user@example.org phone=+79001234567 otp=654321"
+        for message, category in (
+            ("Variti challenge " + private, "antibot"),
+            ("Playwright browser launch failed " + private, "browser"),
+            ("429 too many requests " + private, "rate_limit"),
+            ("An unexpected Ozon error " + private, "unknown_upstream_error"),
+        ):
+            with self.subTest(category=category):
+                result = safe_mcp_error_category(OzonMCPError(message))
+                self.assertEqual(result, category)
+                self.assertNotIn("example.org", result)
+                self.assertNotIn("654321", result)
+        self.assertEqual(safe_mcp_error_category(ConnectionError(private)), "transport_or_runtime")
 
 
 @asynccontextmanager
