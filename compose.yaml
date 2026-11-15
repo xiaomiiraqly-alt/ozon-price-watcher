@@ -5,6 +5,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.gateway
+    # PID 1 init reaps orphaned Chromium/Playwright grandchildren.
+    # Without an init, the Python gateway may adopt and retain zombies.
+    init: true
     restart: unless-stopped
     shm_size: 1gb
     environment:
