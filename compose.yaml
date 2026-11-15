@@ -84,11 +84,25 @@ services:
         condition: service_started
     volumes:
       - ./data/bot:/data
-    ports:
-      # Only loopback on VPS. Publish externally through HTTPS Caddy/reverse proxy.
-      - '127.0.0.1:8765:8086'
     networks:
       - private_backend
+    # Keep login credentials/code processing on the isolated backend.
+    # Docker 29 does not publish ports from internal-only networks.
+
+  login-publisher:
+    image: nginx:stable-alpine
+    restart: unless-stopped
+    depends_on:
+      login-web:
+        condition: service_started
+    volumes:
+      - ./deploy/login-publisher.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      # Host Caddy terminates HTTPS and forwards to this loopback-only port.
+      - '127.0.0.1:8765:8080'
+    networks:
+      - private_backend
+      - web_publisher_egress
 
   family-https:
     image: caddy:2.10-alpine
@@ -117,3 +131,7 @@ networks:
     internal: true
   direct_egress:
     driver: bridge
+  web_publisher_egress:
+    driver: bridge
+    # Non-internal gateway required for Docker host-port publishing.
+    # Only the nginx publisher (not login-web or bot) joins this network.
