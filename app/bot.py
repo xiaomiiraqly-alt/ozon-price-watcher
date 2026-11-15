@@ -196,6 +196,7 @@ def setup_handlers(dp:Dispatcher,store:Store,config:Config,bot:Bot) -> dict[int,
         try:
             async with connect_gateway(config.gateway_url,config.gateway_token,s.user_id) as api:
                 result=await api.call("session_status")
+            if not isinstance(result,dict):raise GatewayError("Invalid session status")
             report.append("Ozon: "+("подключён" if result.get("signed_in") else "не подключён, /connect"))
         except GatewayError:
             report.append("Ozon: сервис недоступен")
@@ -216,8 +217,8 @@ def setup_handlers(dp:Dispatcher,store:Store,config:Config,bot:Bot) -> dict[int,
         if len(args)>1:
             if args[1] in ("cart","order","manual"):
                 kind=args[1]
-                if len(args)>2 and args[2].isdigit():page=max(1,int(args[2]))
-            elif args[1].isdigit():page=max(1,int(args[1]))
+                if len(args)>2 and args[2].isascii() and args[2].isdigit():page=max(1,int(args[2]))
+            elif args[1].isascii() and args[1].isdigit():page=max(1,int(args[1]))
             else:
                 await message.answer("Формат: /items [cart|order|manual] [страница]")
                 return
