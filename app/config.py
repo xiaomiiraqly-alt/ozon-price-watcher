@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from urllib.parse import urlsplit
 from dataclasses import dataclass
 
 
@@ -21,10 +22,11 @@ class Config:
     def from_env(cls) -> "Config":
         token=os.environ.get("TELEGRAM_BOT_TOKEN","").strip()
         owner=os.environ.get("TELEGRAM_USER_ID","").strip()
-        if not token or not owner.isdigit() or int(owner)<=0:
+        if not token or not owner.isascii() or not owner.isdigit() or len(owner)>19 or not 0<int(owner)<2**63:
             raise ValueError("Set TELEGRAM_BOT_TOKEN and numeric TELEGRAM_USER_ID in .env")
         proxy=os.environ.get("TELEGRAM_PROXY_URL","").strip()
-        if not proxy.startswith("socks5://"):
+        proxy_parts=urlsplit(proxy)
+        if proxy_parts.scheme!="socks5" or not proxy_parts.hostname or not proxy_parts.port:
             raise ValueError("TELEGRAM_PROXY_URL must be socks5://awg-client:1080; direct Telegram is forbidden")
         mode=os.environ.get("PRICE_MODE","bank").strip()
         if mode not in ("bank","regular"):
@@ -33,8 +35,10 @@ class Config:
         if len(secret)<32:
             raise ValueError("GATEWAY_TOKEN must contain at least 32 random characters")
         base=os.environ.get("LOGIN_BASE_URL","").strip().rstrip("/")
-        if base and not base.startswith("https://"):
-            raise ValueError("LOGIN_BASE_URL must start with https://")
+        if base:
+            parsed=urlsplit(base)
+            if parsed.scheme!="https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path:
+                raise ValueError("LOGIN_BASE_URL must be an HTTPS origin without a path")
         return cls(bot_token=token,telegram_proxy_url=proxy,owner_id=int(owner),
                    gateway_url=os.environ.get("OZON_GATEWAY_URL","http://ozon-gateway:8085"),
                    gateway_token=secret,login_base_url=base,

@@ -60,5 +60,24 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(self.store.forget_manual("12345678"),1)
         self.assertEqual(self.store.list_items(),[])
 
+    def test_unknown_purchase_price_never_uses_current_quote_as_baseline(self):
+        args=dict(source_type="order",source_ref="111111-0001",sku="12345678",title="Test",url="")
+        self.assertIsNone(self.store.observe(**args,price=1500))
+        self.assertIsNone(self.store.list_items()[0]["base_price"])
+        self.assertIsNone(self.store.observe(**args,price=1000))
+        notice=self.store.observe(**args,price=1000,base_price=1200)
+        self.assertEqual(notice.base_price,1200)
+
+    def test_inserted_terminal_item_is_inactive(self):
+        self.store.observe(**self.args,price=1000,state="received")
+        self.assertEqual(self.store.list_items(active_only=True),[])
+
+    def test_oversized_item_ids_are_safe(self):
+        for identifier in ("#"+"9"*100,"#9223372036854775808","#²"):
+            with self.subTest(identifier=identifier):
+                self.assertEqual(self.store.set_threshold(identifier,100),0)
+                self.assertEqual(self.store.set_muted(identifier,True),0)
+                self.assertEqual(self.store.forget_manual(identifier),0)
+
 if __name__ == "__main__":
     unittest.main()

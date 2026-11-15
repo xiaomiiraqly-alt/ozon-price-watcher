@@ -1,1 +1,1 @@
-"""Single-user Ozon cart / order price watcher."""
+"""Private family Ozon cart / order price watcher."""

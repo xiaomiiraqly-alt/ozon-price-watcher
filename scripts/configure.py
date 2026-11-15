@@ -19,7 +19,7 @@ from app.awg_import import import_awg_profile  # noqa: E402
 
 TOKEN_RE = re.compile(r"^[0-9]{5,}:[A-Za-z0-9_-]{20,}$")
 USER_RE = re.compile(r"^[0-9]{1,20}$")
-DOMAIN_RE = re.compile(r"^(?=.{4,253}$)[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+$")
+DOMAIN_RE = re.compile(r"^(?=.{4,253}$)[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$")
 
 
 def read_hidden_link(prompt: str) -> str:
@@ -79,7 +79,7 @@ def render_env(existing: str, token: str, owner: str, domain: str | None = None)
         "TELEGRAM_USER_ID": owner,
         "TELEGRAM_PROXY_URL": "socks5://awg-client:1080",
         "OZON_GATEWAY_URL": "http://ozon-gateway:8085",
-        "GATEWAY_TOKEN": initial.get("GATEWAY_TOKEN") or secrets.token_urlsafe(48),
+        "GATEWAY_TOKEN": initial.get("GATEWAY_TOKEN") if len(initial.get("GATEWAY_TOKEN", ""))>=32 else secrets.token_urlsafe(48),
         "DATABASE_PATH": "/data/watcher.sqlite3",
     })
     if domain is not None:
@@ -110,7 +110,7 @@ def write_private(path: Path, data: str) -> None:
 def configure(token: str, owner: str, key: str, root: Path = ROOT, domain: str | None = None) -> None:
     if not TOKEN_RE.fullmatch(token):
         raise ValueError("Неверный формат Telegram-токена от @BotFather")
-    if not USER_RE.fullmatch(owner) or int(owner) < 1:
+    if not USER_RE.fullmatch(owner) or not 0<int(owner)<2**63:
         raise ValueError("Нужен числовой Telegram User ID")
     profile = import_awg_profile(key)
     env = root / ".env"
@@ -140,8 +140,8 @@ def main() -> int:
         print("Неверный формат токена. Проверьте значение в @BotFather.")
     old_id = previous.get("TELEGRAM_USER_ID", "")
     while True:
-        owner = input(f"Ваш числовой Telegram User ID" + (f" [{old_id}]" if old_id else "") + ": ").strip() or old_id
-        if USER_RE.fullmatch(owner) and int(owner) > 0:
+        owner = input("Ваш числовой Telegram User ID" + (f" [{old_id}]" if old_id else "") + ": ").strip() or old_id
+        if USER_RE.fullmatch(owner) and 0<int(owner)<2**63:
             break
         print("Введите положительный числовой User ID (не @username).")
     previous_domain = previous.get("LOGIN_DOMAIN", "")

@@ -7,6 +7,7 @@ One-time Ozon codes are never sent to Telegram or persisted in SQLite.
 from __future__ import annotations
 
 import html
+import asyncio
 import os
 import re
 import secrets
@@ -38,6 +39,19 @@ def build_app(store:Store, gateway_url:str, gateway_token:str) -> web.Applicatio
     if len(gateway_token)<32:
         raise ValueError("GATEWAY_TOKEN is required")
 
+    # There is one Ozon login state per user, even when two browser tabs POST.
+    user_locks:dict[int,asyncio.Lock]={}
+
+    @web.middleware
+    async def serial_login(request:web.Request,handler):
+        if request.method=="POST":
+            session=store.web_session(request.cookies.get(COOKIE,""))
+            if session:
+                lock=user_locks.setdefault(int(session["user_id"]),asyncio.Lock())
+                async with lock:
+                    return await handler(request)
+        return await handler(request)
+
     @web.middleware
     async def security_headers(request:web.Request, handler):
         headers={
@@ -54,7 +68,7 @@ def build_app(store:Store, gateway_url:str, gateway_token:str) -> web.Applicatio
         response.headers.update(headers)
         return response
 
-    app=web.Application(middlewares=[security_headers],client_max_size=1024)
+    app=web.Application(middlewares=[security_headers,serial_login],client_max_size=1024)
     routes=web.RouteTableDef()
 
     def active_session(request:web.Request):
@@ -65,7 +79,7 @@ def build_app(store:Store, gateway_url:str, gateway_token:str) -> web.Applicatio
     def protected_post(request:web.Request,session,fields:dict):
         if not session or session["attempts"] >= 6:
             raise web.HTTPForbidden()
-        if not secrets.compare_digest(session["csrf"],str(fields.get("csrf",""))):
+        if not secrets.compare_digest(session["csrf"].encode(),str(fields.get("csrf","")).encode()):
             raise web.HTTPForbidden()
 
     @routes.get("/health")
@@ -112,10 +126,13 @@ def build_app(store:Store, gateway_url:str, gateway_token:str) -> web.Applicatio
         try:
             async with connect_gateway(gateway_url,gateway_token,int(session["user_id"])) as api:
                 status=await api.call("session_status")
+                if not isinstance(status,dict):raise GatewayError("Invalid session status")
                 if status.get("signed_in"):
                     store.end_web_session(sid)
                     return page("Ozon уже подключён","<p>Чтобы подключить другой аккаунт, сначала выполните /disconnect confirm в Telegram.</p>")
-                await api.call("start_login",login=login)
+                result=await api.call("start_login",login=login)
+                if not isinstance(result,dict) or result.get("stage")!="code_requested":
+                    raise GatewayError("Login code was not requested")
         except GatewayError:
             return page("Не удалось отправить код","<p class=error>Не удалось выполнить вход. Попробуйте повторно или запросите новую ссылку.</p>")
         store.web_stage(sid,"code")
@@ -136,8 +153,8 @@ def build_app(store:Store, gateway_url:str, gateway_token:str) -> web.Applicatio
                 result=await api.call("submit_login_code",code=code)
         except GatewayError:
             return page("Ошибка авторизации","<p class=error>Код не принят или истёк. Начните подключение заново через /connect.</p>")
-        if not result.get("signed_in"):
-            return page("Вход не выполнен","<p class=error>Ozon не подтвердил авторизацию. Проверьте код.</p>")
+        if not isinstance(result,dict) or not result.get("signed_in"):
+            return page("Вход не выполнен","<p class=error>Ozon не подтвердил авторизацию. Запросите новую ссылку через /connect.</p>")
         store.end_web_session(sid)
         response=page("Ozon подключён","<p>Аккаунт подключён. Вернитесь в Telegram и отправьте /sync.</p>")
         response.del_cookie(COOKIE,path="/login")

@@ -14,5 +14,7 @@ data/
 vendor/
 .coverage
 *.egg-info/
+build/
+dist/
 
 # Private AWG client profile/keys live in ignored data/awg-client/

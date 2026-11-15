@@ -25,6 +25,14 @@ def digest(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def item_id(identifier:str) -> int|None:
+    raw=identifier[1:]
+    if not identifier.startswith("#") or not raw.isascii() or not raw.isdigit() or len(raw)>19:
+        return None
+    value=int(raw)
+    return value if 0<value<2**63 else None
+
+
 @dataclass(frozen=True)
 class Notice:
     item_id: int
@@ -206,7 +214,12 @@ class Store:
             raise PermissionError("Not allowed")
         token = secrets.token_urlsafe(32)
         with self.db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if not conn.execute("SELECT 1 FROM users WHERE user_id=? AND revoked=0", (user_id,)).fetchone():
+                raise PermissionError("Not allowed")
             conn.execute("DELETE FROM login_tokens WHERE user_id=?", (user_id,))
+            conn.execute("DELETE FROM web_sessions WHERE user_id=? OR expires_at<=?", (user_id,now()))
+            conn.execute("DELETE FROM login_tokens WHERE expires_at<=?", (now(),))
             conn.execute("INSERT INTO login_tokens(token_hash,user_id,expires_at) VALUES(?,?,?)", (digest(token),user_id,future(ttl)))
         return token
 
@@ -220,6 +233,7 @@ class Store:
             if not row:
                 return None
             conn.execute("DELETE FROM login_tokens WHERE token_hash=?", (digest(token),))
+            conn.execute("DELETE FROM web_sessions WHERE user_id=? OR expires_at<=?", (row["user_id"],now()))
             session = secrets.token_urlsafe(32)
             csrf = secrets.token_urlsafe(24)
             conn.execute("INSERT INTO web_sessions(session_hash,user_id,csrf,expires_at) VALUES(?,?,?,?)",
@@ -236,7 +250,12 @@ class Store:
 
     def web_attempt(self, session: str) -> int:
         with self.db() as conn:
-            conn.execute("UPDATE web_sessions SET attempts=attempts+1 WHERE session_hash=?",(digest(session),))
+            conn.execute("BEGIN IMMEDIATE")
+            updated=conn.execute("UPDATE web_sessions SET attempts=attempts+1 WHERE session_hash=? AND expires_at>? "
+                                 "AND attempts<6 AND EXISTS (SELECT 1 FROM users u WHERE u.user_id=web_sessions.user_id AND u.revoked=0)",
+                                 (digest(session),now())).rowcount
+            if not updated:
+                return 999
             row=conn.execute("SELECT attempts FROM web_sessions WHERE session_hash=?",(digest(session),)).fetchone()
             return int(row[0]) if row else 999
 
@@ -293,9 +312,9 @@ class Store:
             old=conn.execute("SELECT * FROM items WHERE user_id=? AND source_type=? AND source_ref=? AND sku=?",
                              (self.user_id,source_type,source_ref,sku)).fetchone()
             if old is None:
-                baseline = base_price if base_price is not None else price
-                cursor=conn.execute("INSERT INTO items(user_id,source_type,source_ref,sku,title,url,state,base_price,last_price,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                                    (self.user_id,source_type,source_ref,sku,title,url,state,baseline,price,at))
+                baseline = base_price if source_type=="order" else (base_price if base_price is not None else price)
+                cursor=conn.execute("INSERT INTO items(user_id,source_type,source_ref,sku,title,url,state,base_price,last_price,active,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                                    (self.user_id,source_type,source_ref,sku,title,url,state,baseline,price,int(state=="active"),at))
                 item_id=int(cursor.lastrowid)
                 previous,muted,custom_threshold,last_alert = None,0,None,None
             else:
@@ -307,7 +326,7 @@ class Store:
                     last_alert=None
                     conn.execute("UPDATE items SET last_alert_price=NULL WHERE id=? AND user_id=?",(item_id,self.user_id))
                 elif baseline is None:
-                    baseline=base_price if base_price is not None else price
+                    baseline=base_price if source_type=="order" else (base_price if base_price is not None else price)
                 previous=old["last_price"]
                 muted=old["muted"]
                 custom_threshold=old["threshold"]
@@ -356,6 +375,21 @@ class Store:
                              [(now(),i,self.user_id) for i in missing])
             return len(missing)
 
+    def assign_shipment(self, order_ref:str, shipment:str, sku:str) -> None:
+        """Retain history when Ozon assigns a parcel ID after the first read."""
+        ref=f"{order_ref}|{shipment}"
+        with self.db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            exists=conn.execute("SELECT 1 FROM items WHERE user_id=? AND source_type='order' AND source_ref=? AND sku=?",
+                                (self.user_id,ref,sku)).fetchone()
+            if exists:
+                conn.execute("UPDATE items SET active=0,state='superseded',updated_at=? "
+                             "WHERE user_id=? AND source_type='order' AND source_ref=? AND sku=?",
+                             (now(),self.user_id,order_ref,sku))
+            else:
+                conn.execute("UPDATE items SET source_ref=? WHERE user_id=? AND source_type='order' AND source_ref=? AND sku=?",
+                             (ref,self.user_id,order_ref,sku))
+
     def close_order(self, order_ref: str, sku: str, state: str) -> None:
         if state not in {"received","cancelled"}:return
         with self.db() as conn:
@@ -366,24 +400,24 @@ class Store:
         if threshold is not None and not 1 <= threshold <= 1_000_000:
             raise ValueError("Amount must be between 1 and 1,000,000 rubles")
         with self.db() as conn:
-            if identifier.startswith("#") and identifier[1:].isdigit():
-                cursor=conn.execute("UPDATE items SET threshold=? WHERE id=? AND user_id=?",(threshold,int(identifier[1:]),self.user_id))
+            if identifier.startswith("#"):
+                cursor=conn.execute("UPDATE items SET threshold=? WHERE id=? AND user_id=?",(threshold,item_id(identifier),self.user_id))
             else:
                 cursor=conn.execute("UPDATE items SET threshold=? WHERE sku=? AND user_id=?",(threshold,identifier,self.user_id))
             return cursor.rowcount
 
     def set_muted(self, identifier: str, muted: bool) -> int:
         with self.db() as conn:
-            if identifier.startswith("#") and identifier[1:].isdigit():
-                cursor=conn.execute("UPDATE items SET muted=? WHERE id=? AND user_id=?",(int(muted),int(identifier[1:]),self.user_id))
+            if identifier.startswith("#"):
+                cursor=conn.execute("UPDATE items SET muted=? WHERE id=? AND user_id=?",(int(muted),item_id(identifier),self.user_id))
             else:
                 cursor=conn.execute("UPDATE items SET muted=? WHERE sku=? AND user_id=?",(int(muted),identifier,self.user_id))
             return cursor.rowcount
 
     def forget_manual(self, identifier: str) -> int:
         with self.db() as conn:
-            if identifier.startswith("#") and identifier[1:].isdigit():
-                rows=conn.execute("SELECT id FROM items WHERE user_id=? AND id=? AND source_type='manual'",(self.user_id,int(identifier[1:]))).fetchall()
+            if identifier.startswith("#"):
+                rows=conn.execute("SELECT id FROM items WHERE user_id=? AND id=? AND source_type='manual'",(self.user_id,item_id(identifier))).fetchall()
             else:
                 rows=conn.execute("SELECT id FROM items WHERE user_id=? AND sku=? AND source_type='manual'",(self.user_id,identifier)).fetchall()
             for record in rows:

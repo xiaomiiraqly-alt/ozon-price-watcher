@@ -40,6 +40,12 @@ class BotProxyConfigTests(unittest.TestCase):
         }, clear=True):
             self.assertEqual(Config.from_env().telegram_proxy_url, 'socks5://awg-client:1080')
 
+    def test_invalid_owner_proxy_and_login_origin(self):
+        values={'TELEGRAM_BOT_TOKEN':'123:TEST','TELEGRAM_USER_ID':'111','TELEGRAM_PROXY_URL':'socks5://awg-client:1080','GATEWAY_TOKEN':'a'*48}
+        for key,value in (('TELEGRAM_USER_ID','9'*100),('TELEGRAM_USER_ID','²'),('TELEGRAM_PROXY_URL','socks5://'),('LOGIN_BASE_URL','https://'),('LOGIN_BASE_URL','https://example.org/path'),('LOGIN_BASE_URL','https://user:secret@example.org')):
+            with self.subTest(key=key,value=value),patch.dict(os.environ,{**values,key:value},clear=True),self.assertRaises(ValueError):
+                Config.from_env()
+
 
 @unittest.skipIf(yaml is None, 'install PyYAML for Docker YAML tests')
 class DockerEgressTests(unittest.TestCase):
@@ -63,7 +69,15 @@ class DockerEgressTests(unittest.TestCase):
     def test_family_login_exposes_only_loopback_http_and_optional_https(self):
         auth = self.compose['services']['login-web']
         self.assertEqual(auth['networks'], ['private_backend'])
-        self.assertEqual(auth['ports'], ['127.0.0.1:8765:8086'])
+        self.assertNotIn('ports', auth)
+        publisher=self.compose['services']['login-publisher']
+        self.assertEqual(publisher['ports'], ['127.0.0.1:8765:8080'])
+        self.assertEqual(publisher['networks'], ['private_backend','web_publisher_egress'])
+        self.assertNotIn('env_file',publisher)
+        self.assertFalse(self.compose['networks']['web_publisher_egress'].get('internal',False))
+        nginx=(ROOT/'deploy/login-publisher.conf').read_text()
+        self.assertIn('proxy_pass http://login-web:8086;',nginx)
+        self.assertIn('access_log off;',nginx)
         caddy = self.compose['services']['family-https']
         self.assertEqual(caddy['profiles'], ['family-https'])
         self.assertIn('80:80', caddy['ports'])
@@ -73,6 +87,9 @@ class DockerEgressTests(unittest.TestCase):
         gateway = self.compose['services']['ozon-gateway']
         self.assertNotIn('env_file', gateway)
         self.assertNotIn('TELEGRAM_BOT_TOKEN', gateway['environment'])
+        caddy=self.compose['services']['family-https']
+        self.assertNotIn('env_file',caddy)
+        self.assertEqual(set(caddy['environment']),{'LOGIN_DOMAIN'})
 
     def test_telegram_proxy_uses_awg_namespace_only(self):
         proxy = self.compose['services']['telegram-proxy']

@@ -4,7 +4,6 @@ from __future__ import annotations
 import base64
 import importlib.util
 import json
-import os
 import tempfile
 import unittest
 import zlib
@@ -114,6 +113,10 @@ MaxHandshakeAttempts = 12-28""")
         self.assertIn("PrivateKey = ", profile)
         self.assertIn("PersistentKeepalive = 25", profile)
 
+    def test_uri_preserves_bracketed_ipv6_endpoint(self):
+        uri=f"awg://{quote(key(b'a'),safe='')}@[2001:db8::1]:47083?publickey={quote(key(b'b'),safe='')}&address=10.4.0.2%2F32"
+        self.assertIn("Endpoint = [2001:db8::1]:47083",import_awg_profile(uri))
+
     def test_file_path(self):
         with tempfile.TemporaryDirectory() as d:
             file = Path(d) / "client.conf"
@@ -166,8 +169,22 @@ class InstallationTests(unittest.TestCase):
 
     def test_invalid_domain(self):
         with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaisesRegex(ValueError,"Домен"):
-                installer.configure("123456:abcdefghijklmnopqrstuvwxyzABCDEF123", "987654", CLIENT, Path(tmp), domain="http://bad.invalid")
+            for domain in ("http://bad.invalid","ozon.-invalid.org","ozon.invalid-.org","a"*64+".org"):
+                with self.subTest(domain=domain),self.assertRaisesRegex(ValueError,"Домен"):
+                    installer.configure("123456:abcdefghijklmnopqrstuvwxyzABCDEF123", "987654", CLIENT, Path(tmp), domain=domain)
+
+    def test_oversized_owner_is_rejected_before_writing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError):
+                installer.configure("123456:abcdefghijklmnopqrstuvwxyzABCDEF123","9223372036854775808",CLIENT,Path(tmp))
+            self.assertFalse((Path(tmp)/".env").exists())
+
+    def test_short_existing_gateway_secret_is_replaced(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            (root/".env").write_text("GATEWAY_TOKEN=short\n")
+            installer.configure("123456:abcdefghijklmnopqrstuvwxyzABCDEF123","987654",CLIENT,root)
+            self.assertGreaterEqual(len(installer.env_values((root/".env").read_text())["GATEWAY_TOKEN"]),32)
 
     def test_invalid_link_does_not_replace_previous_secrets(self):
         with tempfile.TemporaryDirectory() as tmp:

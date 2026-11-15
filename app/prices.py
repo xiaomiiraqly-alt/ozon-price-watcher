@@ -3,37 +3,52 @@ from __future__ import annotations
 
 import re
 from decimal import Decimal, InvalidOperation
+import math
 
 
 def rubles(value: str | int | float | None) -> int | None:
     """Parse Ozon's displayed price, e.g. '3 690 ₽' or '3 690,00 ₽'.
 
-    Prices with fractional kopecks are rounded down to avoid false alerts.
+    Fractional rubles are truncated to match the integer-ruble storage model.
     """
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return int(value) if value > 0 else None
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        n=int(value)
+        return n if 0<n<2**63 else None
     raw = str(value).replace("\u00a0", " ").replace("\u202f", " ").strip()
     if not re.search(r"\d", raw):
         return None
-    match = re.search(r"\d[\d\s.,]*", raw)
+    match = re.search(r"[+-]?[0-9][0-9\s.,]*", raw)
     if not match:
         return None
     s = re.sub(r"\s+", "", match.group(0))
-    if "," in s and "." in s:
-        s = s.replace(".", "").replace(",", ".")
-    elif "," in s:
-        whole, fraction = s.rsplit(",", 1)
-        s = whole.replace(",", "") + ("." + fraction if len(fraction) == 2 else fraction)
-    elif s.count(".") > 1:
-        s = s.replace(".", "")
-    elif "." in s and len(s.rsplit(".", 1)[1]) == 3:
-        s = s.replace(".", "")
+    separators = {c for c in s if c in ",."}
+    if len(separators) == 2:
+        # The last separator is decimal: 1.234,50 and 1,234.50.
+        decimal = "," if s.rfind(",") > s.rfind(".") else "."
+        grouping = "." if decimal == "," else ","
+        whole, fraction = s.rsplit(decimal, 1)
+        if not re.fullmatch(r"[0-9]{1,2}", fraction):
+            return None
+        if not re.fullmatch(rf"[+-]?[0-9]{{1,3}}(?:\{grouping}[0-9]{{3}})+", whole):
+            return None
+        s = whole.replace(grouping, "") + "." + fraction
+    elif separators:
+        separator = next(iter(separators))
+        parts = s.split(separator)
+        if len(parts) == 2 and 1 <= len(parts[1]) <= 2:
+            s = parts[0] + "." + parts[1]
+        elif re.fullmatch(rf"[+-]?[0-9]{{1,3}}(?:\{separator}[0-9]{{3}})+", s):
+            s = s.replace(separator, "")
+        else:
+            return None
     try:
         n = int(Decimal(s))
-        return n if n > 0 else None
-    except (InvalidOperation, ValueError):
+        return n if 0<n<2**63 else None
+    except (InvalidOperation, ValueError, OverflowError):
         return None
 
 

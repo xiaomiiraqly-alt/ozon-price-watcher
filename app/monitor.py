@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlsplit
 
 from app.gateway_client import GatewayError, connect_gateway
 from app.prices import choose_card_price, rubles
@@ -17,6 +19,20 @@ Notifier = Callable[[Notice], Awaitable[None]]
 
 def product_url(sku: str) -> str:
     return f"https://www.ozon.ru/product/{sku}/"
+
+
+def product_sku(text:str) -> str:
+    text=text.strip()
+    if re.fullmatch(r"[0-9]{6,30}",text):
+        return text
+    parsed=urlsplit(text)
+    if parsed.scheme not in {"http","https"} or parsed.hostname not in {"ozon.ru","www.ozon.ru"}:
+        raise ValueError("Нужна ссылка на товар ozon.ru или числовой SKU.")
+    # A title or a tracking query may contain other long numbers.
+    match=re.fullmatch(r"/product/(?:[^/]*-)?([0-9]{6,30})/?",parsed.path)
+    if not match:
+        raise ValueError("В ссылке не найден SKU товара Ozon.")
+    return match.group(1)
 
 
 def order_numbers(row: dict[str, Any]) -> list[str]:
@@ -52,6 +68,19 @@ class Monitor:
         self.price_mode = price_mode
         self.notify = notify
         self._lock = asyncio.Lock()
+        self._stopped = False
+
+    async def stop(self) -> None:
+        self._stopped=True
+        async with self._lock:
+            pass
+
+    async def disconnect(self) -> None:
+        async with self._lock:
+            async with connect_gateway(self.url,self.token,self.store.user_id) as api:
+                await api.drop_account()
+            self.store.erase_user_data(self.store.user_id)
+            self._stopped=True
 
     async def _save(self, report: SyncReport, **kwargs: Any) -> None:
         alert = self.store.observe(**kwargs)
@@ -68,6 +97,9 @@ class Monitor:
     async def sync(self) -> SyncReport:
         async with self._lock:
             report = SyncReport()
+            if self._stopped or not self.store.is_allowed(self.store.user_id):
+                report.errors.append("наблюдение остановлено")
+                return report
             try:
                 async with connect_gateway(self.url,self.token,self.store.user_id) as api:
                     session = await api.call("session_status")
@@ -79,9 +111,14 @@ class Monitor:
                         if not isinstance(cart, dict) or not isinstance(cart.get("items"), list):
                             raise GatewayError("Unexpected cart response")
                         present: set[str] = set()
+                        malformed=False
                         for item in cart["items"]:
+                            if not isinstance(item,dict):
+                                malformed=True
+                                continue
                             sku = str(item.get("id") or "")
                             if not sku.isdigit():
+                                malformed=True
                                 continue
                             present.add(sku)
                             await self._save(
@@ -92,7 +129,7 @@ class Monitor:
                             report.cart += 1
                         # Do not wrongly retire items when a paginated response was truncated.
                         total = cart.get("total_items")
-                        if total is None or int(total) == len(cart["items"]):
+                        if not malformed and total is not None and int(total) == len(cart["items"]):
                             self.store.retire_missing_cart(present)
                         else:
                             report.errors.append("корзина считана не полностью, удаления проигнорированы")
@@ -110,6 +147,8 @@ class Monitor:
                             if not isinstance(row, dict):
                                 continue
                             for order_ref in order_numbers(row):
+                                if order_ref in seen_orders:
+                                    continue
                                 seen_orders.add(order_ref)
                                 try:
                                     positions = await api.call("order_products", order=order_ref)
@@ -124,33 +163,23 @@ class Monitor:
                         logger.exception("Orders sync failed")
                         report.errors.append(f"заказы: {str(exc)[:120]}")
                     else:
-                        # Only consult the archive when an order seen in an earlier run vanished.
+                        # Re-read known orders directly. A recent-100 archive can
+                        # omit old orders and their independently finished parcels.
                         missing = self.store.seen_order_references() - seen_orders
                         if missing:
-                            try:
-                                archive = await api.call("list_orders", scope="completed", limit=100)
-                                if not isinstance(archive, list):
-                                    raise GatewayError("Unexpected archive response")
-                                for row in archive:
-                                    if not isinstance(row, dict):
-                                        continue
-                                    for ref in order_numbers(row):
-                                        if ref not in missing:
-                                            continue
-                                        for item in await api.call("order_products", order=ref):
-                                            if item.get("received") is not None:
-                                                self.store.close_order(
-                                                    f"{ref}|{item['shipment_id']}" if item.get("shipment_id") else ref,
-                                                    str(item.get("sku", "")),
-                                                    "received" if item["received"] else "cancelled")
-                            except Exception as exc:
-                                logger.exception("Archive reconciliation failed")
-                                report.errors.append(f"проверка завершённых заказов: {str(exc)[:100]}")
+                            for ref in sorted(missing):
+                                try:
+                                    positions=await api.call("order_products",order=ref)
+                                    if not isinstance(positions,list):
+                                        raise GatewayError("Invalid order_products response")
+                                    for item in positions:
+                                        await self._sync_order_item(api,report,ref,item,price_cache)
+                                except Exception as exc:
+                                    logger.exception("Order reconciliation failed")
+                                    report.errors.append(f"проверка заказа {ref}: {str(exc)[:100]}")
 
                     # Reuse product cards across orders and manual subscriptions.
                     for row in self.store.list_items("manual", active_only=True):
-                        if row["muted"]:
-                            continue
                         try:
                             card = price_cache.get(row["sku"])
                             if card is None:
@@ -167,7 +196,8 @@ class Monitor:
             except Exception as exc:
                 logger.exception("Ozon MCP unavailable")
                 report.errors.append(f"соединение MCP: {str(exc)[:160]}")
-            self.store.set_setting("last_sync", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+            if self.store.is_allowed(self.store.user_id):
+                self.store.set_setting("last_sync", datetime.now(timezone.utc).isoformat(timespec="seconds"))
             return report
 
     async def _sync_order_item(self, api: Any, report: SyncReport, order_ref: str, item: dict[str, Any], price_cache: dict[str, dict[str, Any]]) -> None:
@@ -179,6 +209,8 @@ class Monitor:
         # Separate deliveries can have different receipt states. Include parcel ID when present.
         shipment = str(item.get("shipment_id") or "")
         ref = f"{order_ref}|{shipment}" if shipment else order_ref
+        if shipment:
+            self.store.assign_shipment(order_ref,shipment,sku)
         if item.get("received") is not None:
             self.store.close_order(ref, sku, "received" if item["received"] else "cancelled")
             return
@@ -201,12 +233,10 @@ class Monitor:
         report.order_items += 1
 
     async def add_manual(self, text: str) -> str:
-        import re
-        match = re.search(r"\d{6,}", text)
-        if not match:
-            raise ValueError("Нужна ссылка Ozon или числовой SKU (не менее 6 цифр).")
-        sku = match.group(0)
+        sku = product_sku(text)
         async with self._lock:
+            if self._stopped or not self.store.is_allowed(self.store.user_id):
+                raise PermissionError("Наблюдение остановлено")
             async with connect_gateway(self.url,self.token,self.store.user_id) as api:
                 card = await api.call("product_details", sku_or_url=sku)
                 if not isinstance(card, dict):
