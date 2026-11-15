@@ -32,6 +32,9 @@ class LoginWebTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.headers["Location"],"/login")
         self.assertEqual(response.cookies[COOKIE]["secure"],True)
         self.assertEqual(response.cookies[COOKIE]["httponly"],True)
+        # Opening /connect from Telegram is cross-site. Strict drops this
+        # cookie on the redirect, causing "Нужна новая ссылка" every time.
+        self.assertEqual(response.cookies[COOKIE]["samesite"],"Lax")
         again=await self.client.get("/login?t="+token,allow_redirects=False)
         self.assertEqual(again.status,200)
         self.assertIn("Ссылка недействительна",await again.text())
