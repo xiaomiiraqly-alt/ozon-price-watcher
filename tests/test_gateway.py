@@ -124,6 +124,14 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
                 release.set()
                 await manager.close()
 
+    async def test_queued_request_deadline_includes_lock_wait(self):
+        manager=WorkerManager(Path(self.tmp.name))
+        with patch("app.gateway.REQUEST_TIMEOUT",.02),patch("app.gateway.active_member",return_value=True):
+            async with manager.user_lock(111):
+                with self.assertRaises(TimeoutError):
+                    await asyncio.wait_for(manager.call(111,"start_login",{}),.5)
+            self.assertEqual(manager.workers,{})
+
 
 class GatewayHTTPTests(unittest.IsolatedAsyncioTestCase):
     async def test_malformed_requests_are_rejected_without_server_errors(self):

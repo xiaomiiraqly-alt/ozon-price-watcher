@@ -30,6 +30,7 @@ BASE=Path(os.environ.get("OZON_USERS_ROOT","/data/ozon/users"))
 IDLE_SECONDS=240
 LOGIN_IDLE_SECONDS=1200
 CALL_TIMEOUT=180
+REQUEST_TIMEOUT=200
 MEMBERS_DB=os.environ.get("MEMBERS_DB","/botdata/watcher.sqlite3")
 
 
@@ -176,7 +177,7 @@ class WorkerManager:
         check_uid(user_id)
         if tool not in ALLOWED:
             raise ValueError("Operation is not allowed")
-        async with self.user_lock(user_id):
+        async with asyncio.timeout(REQUEST_TIMEOUT), self.user_lock(user_id):
             if self.closing:
                 raise RuntimeError("Ozon gateway is shutting down")
             if not active_member(user_id):
@@ -191,7 +192,7 @@ class WorkerManager:
 
     async def drop(self,user_id:int) -> None:
         check_uid(user_id)
-        async with self.user_lock(user_id):
+        async with asyncio.timeout(REQUEST_TIMEOUT), self.user_lock(user_id):
             worker=self.workers.pop(user_id,None)
             if worker:await worker.stop()
             target=self.base/str(user_id)
