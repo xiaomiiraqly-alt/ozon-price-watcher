@@ -81,7 +81,11 @@ def build_app(store:Store, gateway_url:str, gateway_token:str) -> web.Applicatio
                 return page("Ссылка недействительна","<p>Ссылка использована или срок её действия истёк. Запросите /connect в Telegram повторно.</p>")
             sid,_=redeemed
             response=web.HTTPSeeOther(location="/login")
-            response.set_cookie(COOKIE,sid,secure=True,httponly=True,samesite="Strict",max_age=1200,path="/login")
+            # A link opened from Telegram is a cross-site top-level navigation.
+            # Strict cookies are omitted on the following 303 redirect in Chrome
+            # and other browsers, so the session appears lost immediately.
+            # Lax permits safe GET navigation while CSRF protects form POSTs.
+            response.set_cookie(COOKIE,sid,secure=True,httponly=True,samesite="Lax",max_age=1200,path="/login")
             raise response
         sid,session=active_session(request)
         if not session:
