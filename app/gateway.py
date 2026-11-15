@@ -24,6 +24,27 @@ from mcp.client.stdio import stdio_client
 from app.mcp_client import OzonMCPError, unwrap_result
 
 logger=logging.getLogger("ozon.gateway")
+
+
+def safe_mcp_error_category(error: Exception) -> str:
+    """Classify upstream failures without logging Ozon data, codes or cookies."""
+    if not isinstance(error, OzonMCPError):
+        return "transport_or_runtime"
+    message = str(error).casefold()[:4000]
+    indicators = (
+        ("rate_limit", ("429", "rate limit", "too many requests")),
+        ("antibot", ("variti", "captcha", "challenge", "access denied", "forbidden", "403")),
+        ("browser", ("playwright", "chromium", "browser", "xvfb", "display", "executable", "target closed")),
+        ("network", ("net::", "dns", "timeout", "timed out", "connection", "socket", "ssl", "tls", "502", "503")),
+        ("authentication", ("unauthorized", "not authenticated", "not signed in", "401")),
+        ("tool_contract", ("unknown tool", "tool not found", "validation error", "unexpected keyword")),
+    )
+    for category, terms in indicators:
+        if any(term in message for term in terms):
+            return category
+    return "unknown_upstream_error"
+
+
 ALLOWED={"session_status","get_cart","list_orders","order_products","product_details",
          "start_login","submit_login_code"}
 BASE=Path(os.environ.get("OZON_USERS_ROOT","/data/ozon/users"))
@@ -111,7 +132,7 @@ class UserWorker:
                             # before a later request reuses the same profile.
                             break
                         except Exception as exc:
-                            logger.warning("MCP call failed user=%s tool=%s type=%s",self.user_id,req.tool,type(exc).__name__)
+                            logger.warning("MCP call failed user=%s tool=%s type=%s category=%s",self.user_id,req.tool,type(exc).__name__,safe_mcp_error_category(exc))
                             if not req.future.done():req.future.set_exception(RuntimeError("Ozon отклонил запрос или сессия истекла"))
                             if not isinstance(exc,OzonMCPError):
                                 self.accepting=False
